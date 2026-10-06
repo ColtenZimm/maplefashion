@@ -1,44 +1,58 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { reactive, ref, computed } from 'vue'
 
-// 1. Reactive state for the character's appearance
-const skinId = ref(2000)       // 2000 is the classic light skin
-const currentAction = ref('stand1') // Current animation loop
-const selectedHat = ref(1002000)    // Default Hat ID (Classic Red Cap)
+// All API calls hang off this one base: region + game version.
+const API = 'https://maplestory.io/api'
+const VERSION = { region: 'GMS', version: '255' }
 
-// 2. Pre-defined game assets to pick from
+const currentAction = ref('stand1')
 const actions = [
   { id: 'stand1', name: 'Standing' },
   { id: 'walk1', name: 'Walking' },
   { id: 'alert', name: 'Alert' },
-  { id: 'prone', name: 'Prone (Crawling)' },
+  { id: 'prone', name: 'Prone' },
   { id: 'fly', name: 'Flying' }
 ]
 
-const hatsList = [
-  { id: 1002000, name: 'Red Ribbon Headband' },
-  { id: 1002102, name: 'Wizet Hat' },
-  { id: 1002140, name: 'Brown Bamboo Hat' },
-  { id: 1002186, name: 'Zakum Helmet' },
-  { id: 1003660, name: 'Pink Bean Hat' }
+// One entry per slot; `none` lets the slot be empty. Item IDs verified against GMS 255.
+const slots = [
+  { key: 'skin', label: 'Skin', icon: false, options: [
+    { id: 2000, name: 'Light' }, { id: 2001, name: 'Tanned' },
+    { id: 2002, name: 'Pale' }, { id: 2003, name: 'Dark' } ] },
+  { key: 'hair', label: 'Hair', options: [
+    { id: 30000, name: 'Toben Hair' }, { id: 30020, name: 'Unkempt Hair' },
+    { id: 30030, name: 'Shaved Hair' }, { id: 31000, name: 'Cutie Hair' },
+    { id: 31030, name: 'Black Polly' } ] },
+  { key: 'hat', label: 'Hat', none: true, options: [
+    { id: 1002000, name: 'Brown Flight Headgear' }, { id: 1002102, name: 'Blue Moon Conehat' },
+    { id: 1002140, name: 'Wizet Invincible Hat' }, { id: 1002357, name: 'Zakum Helmet' } ] },
+  { key: 'overall', label: 'Overall', none: true, options: [
+    { id: 1050000, name: 'White Crusader Chainmail' }, { id: 1051017, name: 'Red Sauna Robe' },
+    { id: 1052000, name: 'Recycled Box' } ] },
+  { key: 'shoes', label: 'Shoes', none: true, options: [
+    { id: 1070000, name: 'Blue Gomushin' }, { id: 1072001, name: 'Red Rubber Boots' },
+    { id: 1072005, name: 'Leather Sandals' }, { id: 1072018, name: 'Blue Sneakers' } ] }
 ]
 
-// 3. Computed Property to build the dynamic maplestory.io API string
-const characterSpriteUrl = computed(() => {
-  // Construct the JSON structure required by the API
-  const characterPayload = {
-    skin: skinId.value,
-    frame: 0,
-    action: currentAction.value,
-    items: {
-      hat: selectedHat.value
-    }
-  }
-
-  // The API requires a stringified JSON token inside the URL path
-  const jsonToken = encodeURIComponent(JSON.stringify(characterPayload))
-  return `https://maplestory.io{jsonToken}/animated`
+// slot key -> equipped item ID (null = empty)
+const equipped = reactive({
+  skin: 2000, hair: 30000, hat: null, overall: null, shoes: null
 })
+
+// The character endpoint takes comma-separated URL-encoded {itemId, version} objects.
+const characterUrl = computed(() => {
+  const ids = [
+    equipped.skin, 10000 + equipped.skin, // body + matching head
+    20000,                                // default face
+    equipped.hair, equipped.hat, equipped.overall, equipped.shoes
+  ].filter(Boolean)
+  const items = ids
+    .map(itemId => encodeURIComponent(JSON.stringify({ itemId, version: VERSION.version })))
+    .join(',')
+  return `${API}/character/${items}/${currentAction.value}/0`
+})
+
+const iconUrl = id => `${API}/${VERSION.region}/${VERSION.version}/item/${id}/icon`
 </script>
 
 <template>
@@ -49,55 +63,44 @@ const characterSpriteUrl = computed(() => {
     </header>
 
     <div class="studio-layout">
-      <!-- Left side: The Live Sprite Canvas -->
       <div class="preview-card">
         <div class="sprite-display">
-          <img 
-            :src="characterSpriteUrl" 
-            alt="MapleStory Character Preview"
-            class="character-image" 
-          />
+          <img :src="characterUrl" alt="MapleStory Character Preview" class="character-image" />
         </div>
-        <div class="current-meta">
-          Action: <strong>{{ currentAction }}</strong> | Hat ID: <strong>{{ selectedHat }}</strong>
-        </div>
+        <div class="current-meta">Action: <strong>{{ currentAction }}</strong></div>
       </div>
 
-      <!-- Right side: Controls and Inventory Options -->
       <div class="controls-card">
-        <!-- Animation Controls -->
         <section class="control-group">
-          <h3>1. Choose Animation Loop</h3>
+          <h3>Pose</h3>
           <div class="button-grid">
-            <button 
-              v-for="action in actions" 
+            <button
+              v-for="action in actions"
               :key="action.id"
               :class="{ active: currentAction === action.id }"
               @click="currentAction = action.id"
-            >
-              {{ action.name }}
-            </button>
+            >{{ action.name }}</button>
           </div>
         </section>
 
-        <!-- Equipment Controls -->
-        <section class="control-group">
-          <h3>2. Equip a Hat</h3>
+        <section v-for="slot in slots" :key="slot.key" class="control-group">
+          <h3>{{ slot.label }}</h3>
           <div class="item-list">
-            <div 
-              v-for="hat in hatsList" 
-              :key="hat.id"
+            <div
+              v-if="slot.none"
               class="item-row"
-              :class="{ selected: selectedHat === hat.id }"
-              @click="selectedHat = hat.id"
+              :class="{ selected: equipped[slot.key] === null }"
+              @click="equipped[slot.key] = null"
+            ><span class="item-name">None</span></div>
+            <div
+              v-for="item in slot.options"
+              :key="item.id"
+              class="item-row"
+              :class="{ selected: equipped[slot.key] === item.id }"
+              @click="equipped[slot.key] = item.id"
             >
-              <!-- Fetching static item icons directly from the API asset database -->
-              <img 
-                :src="`https://maplestory.io{hat.id}/icon`" 
-                alt="Hat icon" 
-                class="item-icon"
-              />
-              <span class="item-name">{{ hat.name }}</span>
+              <img v-if="slot.icon !== false" :src="iconUrl(item.id)" :alt="item.name" class="item-icon" />
+              <span class="item-name">{{ item.name }}</span>
             </div>
           </div>
         </section>
