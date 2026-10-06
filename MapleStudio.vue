@@ -1,9 +1,6 @@
 <script setup>
-import { reactive, ref, computed } from 'vue'
-
-// All API calls hang off this one base: region + game version.
-const API = 'https://maplestory.io/api'
-const VERSION = { region: 'GMS', version: '255' }
+import { reactive, ref, computed, watch } from 'vue'
+import { iconUrl, characterUrl, searchItems } from './api.js'
 
 const currentAction = ref('stand1')
 const actions = [
@@ -14,45 +11,69 @@ const actions = [
   { id: 'fly', name: 'Flying' }
 ]
 
-// One entry per slot; `none` lets the slot be empty. Item IDs verified against GMS 255.
-const slots = [
-  { key: 'skin', label: 'Skin', icon: false, options: [
-    { id: 2000, name: 'Light' }, { id: 2001, name: 'Tanned' },
-    { id: 2002, name: 'Pale' }, { id: 2003, name: 'Dark' } ] },
-  { key: 'hair', label: 'Hair', options: [
-    { id: 30000, name: 'Toben Hair' }, { id: 30020, name: 'Unkempt Hair' },
-    { id: 30030, name: 'Shaved Hair' }, { id: 31000, name: 'Cutie Hair' },
-    { id: 31030, name: 'Black Polly' } ] },
-  { key: 'hat', label: 'Hat', none: true, options: [
-    { id: 1002000, name: 'Brown Flight Headgear' }, { id: 1002102, name: 'Blue Moon Conehat' },
-    { id: 1002140, name: 'Wizet Invincible Hat' }, { id: 1002357, name: 'Zakum Helmet' } ] },
-  { key: 'overall', label: 'Overall', none: true, options: [
-    { id: 1050000, name: 'White Crusader Chainmail' }, { id: 1051017, name: 'Red Sauna Robe' },
-    { id: 1052000, name: 'Recycled Box' } ] },
-  { key: 'shoes', label: 'Shoes', none: true, options: [
-    { id: 1070000, name: 'Blue Gomushin' }, { id: 1072001, name: 'Red Rubber Boots' },
-    { id: 1072005, name: 'Leather Sandals' }, { id: 1072018, name: 'Blue Sneakers' } ] }
+// Skin isn't a searchable item, so it stays a short hardcoded list.
+const skins = [
+  { id: 2000, name: 'Light' }, { id: 2001, name: 'Tanned' },
+  { id: 2002, name: 'Pale' }, { id: 2003, name: 'Dark' }
 ]
 
-// slot key -> equipped item ID (null = empty)
-const equipped = reactive({
-  skin: 2000, hair: 30000, hat: null, overall: null, shoes: null
-})
+// Item slots, loaded from the API. `none` slots can be emptied.
+const slots = [
+  { key: 'hair', label: 'Hair', category: 'Character', sub: 'Hair' },
+  { key: 'hat', label: 'Hat', category: 'Armor', sub: 'Hat', none: true },
+  { key: 'overall', label: 'Overall', category: 'Armor', sub: 'Overall', none: true },
+  { key: 'shoes', label: 'Shoes', category: 'Armor', sub: 'Shoes', none: true }
+]
 
-// The character endpoint takes comma-separated URL-encoded {itemId, version} objects.
-const characterUrl = computed(() => {
+const skin = ref(2000)
+const equipped = reactive({ hair: { id: 30000, name: 'Toben Hair' }, hat: null, overall: null, shoes: null })
+
+const characterSrc = computed(() => {
   const ids = [
-    equipped.skin, 10000 + equipped.skin, // body + matching head
-    20000,                                // default face
-    equipped.hair, equipped.hat, equipped.overall, equipped.shoes
+    skin.value, 10000 + skin.value, 20000, // body + matching head + default face
+    ...slots.map(s => equipped[s.key]?.id)
   ].filter(Boolean)
-  const items = ids
-    .map(itemId => encodeURIComponent(JSON.stringify({ itemId, version: VERSION.version })))
-    .join(',')
-  return `${API}/character/${items}/${currentAction.value}/0`
+  return characterUrl(ids, currentAction.value)
 })
 
-const iconUrl = id => `${API}/${VERSION.region}/${VERSION.version}/item/${id}/icon`
+// Catalog browser for the active slot
+const PAGE = 30
+const activeKey = ref('hair')
+const activeSlot = computed(() => slots.find(s => s.key === activeKey.value))
+const search = ref('')
+const items = ref([])
+const loading = ref(false)
+const error = ref('')
+const hasMore = ref(false)
+let latest = 0 // ignore responses from superseded requests
+let timer
+
+async function load(append = false) {
+  const req = ++latest
+  loading.value = true
+  error.value = ''
+  try {
+    const page = await searchItems({
+      ...activeSlot.value, search: search.value,
+      start: append ? items.value.length : 0, count: PAGE
+    })
+    if (req !== latest) return
+    items.value = append ? items.value.concat(page) : page
+    hasMore.value = page.length === PAGE
+  } catch {
+    if (req === latest) error.value = 'Could not load items from maplestory.io.'
+  } finally {
+    if (req === latest) loading.value = false
+  }
+}
+
+watch(activeKey, () => { search.value = ''; load() }, { immediate: true })
+watch(search, () => { clearTimeout(timer); timer = setTimeout(load, 300) })
+
+function pick(item) {
+  const key = activeKey.value
+  equipped[key] = activeSlot.value.none && equipped[key]?.id === item.id ? null : item
+}
 </script>
 
 <template>
@@ -65,44 +86,63 @@ const iconUrl = id => `${API}/${VERSION.region}/${VERSION.version}/item/${id}/ic
     <div class="studio-layout">
       <div class="preview-card">
         <div class="sprite-display">
-          <img :src="characterUrl" alt="MapleStory Character Preview" class="character-image" />
+          <img :src="characterSrc" alt="MapleStory Character Preview" class="character-image" />
         </div>
-        <div class="current-meta">Action: <strong>{{ currentAction }}</strong></div>
+        <div class="current-meta">
+          <div v-for="s in slots" :key="s.key">
+            {{ s.label }}: <strong>{{ equipped[s.key]?.name ?? 'None' }}</strong>
+          </div>
+        </div>
       </div>
 
       <div class="controls-card">
         <section class="control-group">
-          <h3>Pose</h3>
+          <h3>Skin</h3>
           <div class="button-grid">
             <button
-              v-for="action in actions"
-              :key="action.id"
-              :class="{ active: currentAction === action.id }"
-              @click="currentAction = action.id"
-            >{{ action.name }}</button>
+              v-for="s in skins" :key="s.id"
+              :class="{ active: skin === s.id }"
+              @click="skin = s.id"
+            >{{ s.name }}</button>
           </div>
         </section>
 
-        <section v-for="slot in slots" :key="slot.key" class="control-group">
-          <h3>{{ slot.label }}</h3>
+        <section class="control-group">
+          <h3>Pose</h3>
+          <div class="button-grid">
+            <button
+              v-for="a in actions" :key="a.id"
+              :class="{ active: currentAction === a.id }"
+              @click="currentAction = a.id"
+            >{{ a.name }}</button>
+          </div>
+        </section>
+
+        <section class="control-group">
+          <h3>Items</h3>
+          <div class="button-grid">
+            <button
+              v-for="s in slots" :key="s.key"
+              :class="{ active: activeKey === s.key }"
+              @click="activeKey = s.key"
+            >{{ s.label }}</button>
+          </div>
+          <input v-model="search" type="search" class="search" :placeholder="`Search ${activeSlot.label.toLowerCase()}…`" />
           <div class="item-list">
             <div
-              v-if="slot.none"
+              v-for="item in items" :key="item.id"
               class="item-row"
-              :class="{ selected: equipped[slot.key] === null }"
-              @click="equipped[slot.key] = null"
-            ><span class="item-name">None</span></div>
-            <div
-              v-for="item in slot.options"
-              :key="item.id"
-              class="item-row"
-              :class="{ selected: equipped[slot.key] === item.id }"
-              @click="equipped[slot.key] = item.id"
+              :class="{ selected: equipped[activeKey]?.id === item.id }"
+              @click="pick(item)"
             >
-              <img v-if="slot.icon !== false" :src="iconUrl(item.id)" :alt="item.name" class="item-icon" />
+              <img :src="iconUrl(item.id)" :alt="item.name" class="item-icon" loading="lazy" />
               <span class="item-name">{{ item.name }}</span>
             </div>
+            <p v-if="error" class="status">{{ error }}</p>
+            <p v-else-if="loading" class="status">Loading…</p>
+            <p v-else-if="!items.length" class="status">No results.</p>
           </div>
+          <button v-if="hasMore && !loading" @click="load(true)">Load more</button>
         </section>
       </div>
     </div>
@@ -254,5 +294,24 @@ button.active {
 .item-name {
   font-weight: 500;
   font-size: 0.95rem;
+}
+
+.item-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem;
+  margin: 0.75rem 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.status {
+  color: #64748b;
+  font-size: 0.9rem;
 }
 </style>
